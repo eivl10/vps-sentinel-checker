@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-VPS Sentinel & Telegram Monitor Bot (V10 Kurrsator Fix, No Hourly Digest, ID Access & Username Display)
-- Группа переименована в 'Курсатор', статус процессов Python исправлен.
-- Ежечасные отчёты полностью отключены (только ручная проверка + алерты при сбоях).
-- Доступ выдаётся строго по Chat ID, в списке пользователей отображается @username.
+VPS Sentinel & Telegram Monitor Bot (V11 Final: 10-Min Interval & Pure Username Display)
+- Интервал тихой фоновой проверки: 10 минут (600 секунд).
+- Пользователи отображаются строго под их реальными @username в списках и кнопках.
+- Доступ выдаётся строго по Chat ID с мгновенным 1-клик подтверждением ролей (Базовый / Полный).
+- В базе остаётся только Главный Администратор (ID: 1447443197, @eivldec).
 """
 
 import json
@@ -457,7 +458,7 @@ def make_user_management_keyboard(config):
     keyboard = []
     for u in allowed_users:
         uid = u["id"]
-        uname = u.get("username", str(uid))
+        uname = u.get("username", f"ID: {uid}")
         role = u.get("role", "base")
         is_adm = uid in admins
         
@@ -478,8 +479,9 @@ def make_user_management_keyboard(config):
     return {"inline_keyboard": keyboard}
 
 def background_watchdog(config, bot, monitor):
-    print("Фоновый тихий мониторинг запущен...")
-    interval = config.get("settings", {}).get("check_interval_seconds", 30)
+    # Интервал проверки из настроек (600 сек = 10 минут)
+    interval = config.get("settings", {}).get("check_interval_seconds", 600)
+    print(f"Фоновый тихий мониторинг запущен с интервалом {interval} сек (10 минут)...")
 
     while True:
         try:
@@ -493,7 +495,7 @@ def background_watchdog(config, bot, monitor):
                 auto_restart = info.get("auto_restart", False)
                 admin_only = info.get("admin_only", False)
                 
-                # Уведомление ТОЛЬКО при реальном сбое
+                # Сообщение ТОЛЬКО при реальном сбое процесса
                 if prev_running and not curr_running:
                     alert_msg = (
                         f"<b>Внимание! Сбой в группе {custom_name}!</b>\n\n"
@@ -544,7 +546,7 @@ def main():
     t = threading.Thread(target=background_watchdog, args=(config, bot, monitor), daemon=True)
     t.start()
 
-    print("VPS Sentinel запущен...")
+    print("VPS Sentinel V11 запущен...")
     offset = 0
 
     while True:
@@ -561,7 +563,7 @@ def main():
                     
                     is_admin_user = bot.is_admin(chat_id)
 
-                    # --- ОБРАБОТКА НОВЫХ ПОЛЬЗОВАТЕЛЕЙ (ОДОБРЕНИЕ АДМИНОМ ПО ID) ---
+                    # --- ОБРАБОТКА НОВЫХ ПОЛЬЗОВАТЕЛЕЙ (ПОДТВЕРЖДЕНИЕ АДМИНОМ ПО CHAT ID) ---
                     if bot.allowed_chat_ids and chat_id not in bot.allowed_chat_ids:
                         uname = f"@{from_user.get('username')}" if from_user.get('username') else from_user.get('first_name', str(chat_id))
                         
@@ -569,7 +571,7 @@ def main():
                             chat_id,
                             f"👋 Здравствуйте, {uname}!\n\n"
                             f"Ваш запрос на доступ отправлен Администратору.\n"
-                            f"Ваш Chat ID: <code>{chat_id}</code>\n"
+                            f"Ваш Telegram Chat ID: <code>{chat_id}</code>\n"
                             f"Ожидайте подтверждения доступа..."
                         )
 
@@ -626,7 +628,7 @@ def main():
                             "<b>Управление доступом пользователей</b>\n\n"
                             "Для выдачи доступа новому пользователю отправьте его числовой Chat ID:\n"
                             "<code>/add 123456789</code>\n\n"
-                            "Список разрешённых пользователей с юзернеймами:"
+                            "Список разрешённых пользователей с юзернеймами и ID:"
                         )
                         bot.send_message(chat_id, info_msg, reply_markup=kb)
 
