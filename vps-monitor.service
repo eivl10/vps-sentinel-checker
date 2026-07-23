@@ -1,0 +1,17 @@
+[Unit]
+Description=VPS Sentinel & Telegram Auto-Recovery Monitor Bot
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/vps-monitor
+ExecStart=/usr/bin/python3 /opt/vps-monitor/vps_monitor.py
+Restart=always
+RestartSec=3
+StandardOutput=null
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

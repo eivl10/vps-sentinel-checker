@@ -1,0 +1,43 @@
+{
+  "telegram": {
+    "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
+    "allowed_chat_ids": [123456789]
+  },
+  "settings": {
+    "check_interval_seconds": 30,
+    "hourly_digest": true,
+    "notify_on_recovery": true
+  },
+  "containers": [
+    {
+      "id": "postgres_db",
+      "name": "🗄️ База Данных (PostgreSQL)",
+      "auto_restart": true,
+      "category": "БД"
+    },
+    {
+      "id": "redis_cache",
+      "name": "⚡ Кэш-сервер (Redis)",
+      "auto_restart": true,
+      "category": "БД"
+    },
+    {
+      "id": "tg_bot_main",
+      "name": "🤖 Основной Телеграм Бот",
+      "auto_restart": true,
+      "category": "Боты"
+    },
+    {
+      "id": "tg_bot_partner",
+      "name": "🤝 Партнёрский Бот",
+      "auto_restart": true,
+      "category": "Боты"
+    },
+    {
+      "id": "web_api",
+      "name": "🌐 Веб API / Сервер",
+      "auto_restart": true,
+      "category": "Сервисы"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+# Secret configuration files with Telegram bot tokens
+config.json
+state.json
+
+# Byte-compiled / Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Temporary & system files
+.tmp/
+.DS_Store
+*.log
