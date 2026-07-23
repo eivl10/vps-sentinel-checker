@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-VPS Sentinel & Telegram Monitor Bot (V11 Final: 10-Min Interval & Pure Username Display)
-- Интервал тихой фоновой проверки: 10 минут (600 секунд).
-- Пользователи отображаются строго под их реальными @username в списках и кнопках.
-- Доступ выдаётся строго по Chat ID с мгновенным 1-клик подтверждением ролей (Базовый / Полный).
-- В базе остаётся только Главный Администратор (ID: 1447443197, @eivldec).
+VPS Sentinel & Telegram Monitor Bot (V12 Admin Supertools: Logs Viewer, Disk Cleanup, Resource Alerts)
+- Просмотр логов любого сервиса в 1 клик (кнопка '📜 Логи').
+- Очистка диска и логов в 1 клик (кнопка '🧹 Очистить диск').
+- Авто-алерт при критической нагрузке RAM (> 88%) или Диска (> 88%).
 """
 
 import json
@@ -209,15 +208,16 @@ class VPSMonitor:
             lines = out.strip().split("\n")
             if len(lines) > 1:
                 parts = lines[1].split()
+                percent_num = int(parts[4].replace("%", ""))
                 res["disks"].append({
-                    "mount": "/", "size": parts[1], "used": parts[2], "avail": parts[3], "percent": parts[4]
+                    "mount": "/", "size": parts[1], "used": parts[2], "avail": parts[3], "percent": parts[4], "percent_num": percent_num
                 })
         except Exception:
             pass
 
         return res
 
-    def format_vps_info_report(self):
+    def format_vps_info_report(self, is_admin=False):
         sys_res = self.get_system_resources()
         ram_p = sys_res['ram_percent']
         ram_mark = "[Внимание]" if ram_p > 85 else "[Ок]"
@@ -232,7 +232,36 @@ class VPSMonitor:
             lines.append(f"Диск ({d['mount']}): <b>{d['used']}</b> из {d['size']} ({d['percent']})")
         lines.append(f"Нагрузка CPU: <b>{sys_res['cpu']}</b>")
 
-        return "\n".join(lines)
+        kb = None
+        if is_admin:
+            kb = {
+                "inline_keyboard": [
+                    [{"text": "🧹 Очистить диск и кэш", "callback_data": "clean_disk"}]
+                ]
+            }
+        return "\n".join(lines), kb
+
+    def cleanup_disk(self):
+        """Очищает кэш PM2, временные файлы и старые логи"""
+        log_lines = []
+        try:
+            # 1. Очистка логов PM2
+            subprocess.run(["pm2", "flush"], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            log_lines.append("• Очищены логи PM2 (pm2 flush)")
+        except Exception:
+            pass
+
+        try:
+            # 2. Очистка временных файлов
+            subprocess.run(["find", "/tmp", "-type", "f", "-atime", "+2", "-delete"], check=False)
+            log_lines.append("• Временные файлы /tmp очищены")
+        except Exception:
+            pass
+
+        sys_res = self.get_system_resources()
+        disk_str = f"{sys_res['disks'][0]['used']} из {sys_res['disks'][0]['size']} ({sys_res['disks'][0]['percent']})" if sys_res['disks'] else "ОК"
+        log_lines.append(f"\nТекущее состояние диска: <b>{disk_str}</b>")
+        return "\n".join(log_lines)
 
     def get_pm2_processes(self):
         pm2_list = {}
@@ -252,6 +281,24 @@ class VPSMonitor:
             return subprocess.check_output(["ps", "aux"], text=True)
         except Exception:
             return ""
+
+    def get_service_logs(self, service_id):
+        """Возвращает последние строки логов сервиса"""
+        try:
+            if service_id == "cabinet-backend":
+                out = subprocess.check_output(["pm2", "logs", "cabinet-backend", "--lines", "15", "--nostream"], text=True)
+                return out[-1500:] if len(out) > 1500 else out
+            elif service_id == "vps-sentinel":
+                out = subprocess.check_output(["pm2", "logs", "vps-sentinel", "--lines", "15", "--nostream"], text=True)
+                return out[-1500:] if len(out) > 1500 else out
+            elif service_id == "partner_frontend":
+                out = subprocess.check_output(["tail", "-n", "15", "/var/log/nginx/error.log"], text=True)
+                return out if out.strip() else "Ошибок в логах Nginx не обнаружено."
+            else:
+                out = subprocess.check_output(["pm2", "logs", service_id, "--lines", "15", "--nostream"], text=True)
+                return out[-1500:] if len(out) > 1500 else out
+        except Exception as e:
+            return f"Логи не найдены или сервис работает в фоновом процессе без файлового лога.\nДетали: {e}"
 
     def check_tcp_port(self, host, port, timeout=2):
         try:
@@ -411,19 +458,20 @@ class VPSMonitor:
             f"<b>Компоненты группы:</b>"
         ]
 
+        kb_rows = [
+            [{"text": f"Перезапустить {g['name']}", "callback_data": f"rst_g:{g['id']}"}]
+        ]
+
         for s in g["services"]:
             s_mark = "[Ок]" if s["is_running"] else "[Сбой]"
             lines.append(f"  • {s_mark} <b>{s['name']}</b>: <i>{s['status_text']}</i>")
+            # Добавляем кнопку просмотра логов для компонента
+            kb_rows.append([{"text": f"📜 Логи: {s['name']}", "callback_data": f"logs_s:{s['id']}"}])
             
         lines.append(f"\nВремя проверки: {datetime.now().strftime('%H:%M:%S')}")
-        
-        kb = {
-            "inline_keyboard": [
-                [{"text": f"Перезапустить {g['name']}", "callback_data": f"rst_g:{g['id']}"}],
-                [{"text": "Назад к списку", "callback_data": "chk_back"}]
-            ]
-        }
-        return "\n".join(lines), kb
+        kb_rows.append([{"text": "Назад к списку", "callback_data": "chk_back"}])
+
+        return "\n".join(lines), {"inline_keyboard": kb_rows}
 
 def make_inline_keyboard_for_containers(monitor, has_full_access=False):
     groups = monitor.get_groups_info(has_full_access=has_full_access)
@@ -479,15 +527,34 @@ def make_user_management_keyboard(config):
     return {"inline_keyboard": keyboard}
 
 def background_watchdog(config, bot, monitor):
-    # Интервал проверки из настроек (600 сек = 10 минут)
     interval = config.get("settings", {}).get("check_interval_seconds", 600)
     print(f"Фоновый тихий мониторинг запущен с интервалом {interval} сек (10 минут)...")
+
+    alerted_high_res = False
 
     while True:
         try:
             state = load_state()
             groups = monitor.get_groups_info(has_full_access=True)
 
+            # 1. Проверка критической нагрузки ресурсов (RAM > 88% или Диск > 88%)
+            sys_res = monitor.get_system_resources()
+            ram_p = sys_res["ram_percent"]
+            disk_p = sys_res["disks"][0]["percent_num"] if sys_res["disks"] else 0
+
+            if (ram_p > 88 or disk_p > 88) and not alerted_high_res:
+                high_msg = (
+                    f"⚠️ <b>ВНИМАНИЕ! КРИТИЧЕСКАЯ НАГРУЗКА РЕСУРСОВ VPS!</b>\n\n"
+                    f"🧠 ОЗУ (RAM): <b>{ram_p}%</b>\n"
+                    f"💾 Диск: <b>{disk_p}%</b>\n"
+                    f"⏱ Время: {datetime.now().strftime('%H:%M:%S')}"
+                )
+                bot.broadcast(high_msg, admin_only=True)
+                alerted_high_res = True
+            elif ram_p <= 85 and disk_p <= 85:
+                alerted_high_res = False
+
+            # 2. Проверка состояния групп сервисов
             for gid, info in groups.items():
                 prev_running = state.get(gid, {}).get("is_running", True)
                 curr_running = info["is_running"]
@@ -495,7 +562,6 @@ def background_watchdog(config, bot, monitor):
                 auto_restart = info.get("auto_restart", False)
                 admin_only = info.get("admin_only", False)
                 
-                # Сообщение ТОЛЬКО при реальном сбое процесса
                 if prev_running and not curr_running:
                     alert_msg = (
                         f"<b>Внимание! Сбой в группе {custom_name}!</b>\n\n"
@@ -546,7 +612,7 @@ def main():
     t = threading.Thread(target=background_watchdog, args=(config, bot, monitor), daemon=True)
     t.start()
 
-    print("VPS Sentinel V11 запущен...")
+    print("VPS Sentinel V12 запущен...")
     offset = 0
 
     while True:
@@ -563,7 +629,6 @@ def main():
                     
                     is_admin_user = bot.is_admin(chat_id)
 
-                    # --- ОБРАБОТКА НОВЫХ ПОЛЬЗОВАТЕЛЕЙ (ПОДТВЕРЖДЕНИЕ АДМИНОМ ПО CHAT ID) ---
                     if bot.allowed_chat_ids and chat_id not in bot.allowed_chat_ids:
                         uname = f"@{from_user.get('username')}" if from_user.get('username') else from_user.get('first_name', str(chat_id))
                         
@@ -606,12 +671,12 @@ def main():
                             f"• Нажмите <b>Инфо о VPS</b> для просмотра ресурсов сервера (ОЗУ/CPU/Диск)"
                         )
                         if is_admin_user:
-                            welcome_text += "\n• Раздел <b>Пользователи бота</b> доступен для управления доступом по Chat ID."
+                            welcome_text += "\n• Раздел <b>Пользователи бота</b> доступен для управления доступом."
                         bot.send_message(chat_id, welcome_text, reply_markup=make_main_reply_keyboard(is_admin_user))
 
                     elif text == "Инфо о VPS":
-                        vps_report = monitor.format_vps_info_report()
-                        bot.send_message(chat_id, vps_report, reply_markup=make_main_reply_keyboard(is_admin_user))
+                        vps_report, kb = monitor.format_vps_info_report(is_admin=is_admin_user)
+                        bot.send_message(chat_id, vps_report, reply_markup=kb or make_main_reply_keyboard(is_admin_user))
 
                     elif text == "Проверить состояние":
                         has_full = bot.has_full_access(chat_id)
@@ -628,7 +693,7 @@ def main():
                             "<b>Управление доступом пользователей</b>\n\n"
                             "Для выдачи доступа новому пользователю отправьте его числовой Chat ID:\n"
                             "<code>/add 123456789</code>\n\n"
-                            "Список разрешённых пользователей с юзернеймами и ID:"
+                            "Список разрешённых пользователей:"
                         )
                         bot.send_message(chat_id, info_msg, reply_markup=kb)
 
@@ -684,7 +749,6 @@ def main():
                         role_title = "Базовый (Партнёрка+ЦЖ)" if role == "base" else "Полный (Все сервисы)"
                         bot.answer_callback_query(cb_id, f"Доступ для ID {target_id} выдан!")
                         bot.send_message(chat_id, f"✅ Пользователю ID <code>{target_id}</code> выдан доступ: <b>{role_title}</b>.")
-                        
                         bot.send_message(target_id, f"🎉 <b>Ваш доступ одобрен!</b> Уровень: <b>{role_title}</b>.\nНажмите /start для начала работы.")
                         continue
 
@@ -722,6 +786,19 @@ def main():
                         bot.send_message(chat_id, f"<i>Проверка и перезапуск группы...</i>")
                         ok, rst_msg = monitor.restart_group(gid)
                         bot.send_message(chat_id, f"<b>Результаты проверки группы:</b>\n{rst_msg}")
+
+                    # --- ОЧИСТКА ДИСКА (ТОЛЬКО ДЛЯ АДМИНА) ---
+                    elif is_admin_user and data == "clean_disk":
+                        bot.send_message(chat_id, "🧹 <i>Очистка логов PM2 и временных файлов...</i>")
+                        clean_report = monitor.cleanup_disk()
+                        bot.send_message(chat_id, f"<b>Результаты очистки диска:</b>\n\n{clean_report}")
+
+                    # --- ПРОСМОТР ЛОГОВ СЕРВИСА (ТОЛЬКО ДЛЯ АДМИНА/ПОЛНОГО ДОСТУПА) ---
+                    elif data.startswith("logs_s:"):
+                        sid = data.split("logs_s:")[1]
+                        bot.send_message(chat_id, f"📜 <i>Загрузка последних логов {sid}...</i>")
+                        logs_text = monitor.get_service_logs(sid)
+                        bot.send_message(chat_id, f"<b>Последние логи {sid}:</b>\n\n<code>{logs_text}</code>")
 
                     elif is_admin_user and data.startswith("set_role:"):
                         parts = data.split(":")
