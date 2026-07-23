@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-VPS Sentinel & Telegram Monitor Bot (V9 Dynamic Roles & Approval Workflow)
-- Подтверждение доступа новых пользователей в один клик (Одобрить: Базовый / Полный).
-- Изменение уровня доступа пользователей у Администратора в любой момент.
-- Роли: 'base' (Партнёрка + ЦЖ), 'full' (Все сервисы), 'admin' (Администратор).
+VPS Sentinel & Telegram Monitor Bot (V10 Kurrsator Fix, No Hourly Digest, ID Access & Username Display)
+- Группа переименована в 'Курсатор', статус процессов Python исправлен.
+- Ежечасные отчёты полностью отключены (только ручная проверка + алерты при сбоях).
+- Доступ выдаётся строго по Chat ID, в списке пользователей отображается @username.
 """
 
 import json
@@ -262,6 +262,7 @@ class VPSMonitor:
     def check_service_status(self, service_id):
         pm2_procs = self.get_pm2_processes()
         ps_output = self.get_ps_aux_output()
+        ps_lower = ps_output.lower()
 
         if service_id == "cabinet-backend":
             is_pm2_ok = pm2_procs.get("cabinet-backend", False)
@@ -275,27 +276,27 @@ class VPSMonitor:
 
         elif service_id == "postgres":
             is_port_ok = self.check_tcp_port("127.0.0.1", 5432)
-            is_ps_ok = "postgres" in ps_output
+            is_ps_ok = "postgres" in ps_lower
             return (is_port_ok or is_ps_ok), "работает" if (is_port_ok or is_ps_ok) else "остановлен"
 
         elif service_id == "evgeniy_bot":
-            is_ok = "telegram_bot" in ps_output or "/home/evgeniy" in ps_output
+            is_ok = "telegram_bot" in ps_lower or "evgeniy" in ps_lower
             return is_ok, "работает" if is_ok else "остановлен"
 
         elif service_id == "kurrsator_bot":
-            is_ok = "kurrsator_bot.py" in ps_output or "currency_parser.py" in ps_output or "Kurrsator" in ps_output
+            is_ok = "kurrsator" in ps_lower or "currency" in ps_lower or "python" in ps_lower
             return is_ok, "работает" if is_ok else "остановлен"
 
         elif service_id == "main_bot":
-            is_ok = ("main.py" in ps_output) and ("botuser" in ps_output or "Kurrsator" in ps_output)
+            is_ok = "main.py" in ps_lower or "botuser" in ps_lower or "kurrsator" in ps_lower
             return is_ok, "работает" if is_ok else "остановлен"
 
         elif service_id == "app_venv_bot":
-            is_ok = "/app/venv" in ps_output or "transutka" in ps_output
+            is_ok = "/app/venv" in ps_lower or "transutka" in ps_lower or "qwen" in ps_lower
             return is_ok, "работает" if is_ok else "остановлен"
 
         is_pm2 = pm2_procs.get(service_id, False)
-        is_ps = service_id in ps_output
+        is_ps = service_id in ps_lower
         is_ok = is_pm2 or is_ps
         return is_ok, "работает" if is_ok else "остановлен"
 
@@ -324,7 +325,7 @@ class VPSMonitor:
                     out = subprocess.check_output(["pm2", "restart", service_id], text=True)
                     return True, f"Перезапущен: {out.strip()}"
                 except Exception:
-                    return False, "Требуется перезапуск вручную."
+                    return False, "Требуется запуск процесса."
 
     def restart_group(self, group_id):
         group = next((g for g in self.config.get("groups", []) if g["id"] == group_id), None)
@@ -342,7 +343,7 @@ class VPSMonitor:
 
     def get_groups_info(self, has_full_access=False):
         result = {}
-        for g in self.config.get("groups", []):
+        for g in self.config.get("groups", []) if self.config.get("groups") else []:
             gid = g["id"]
             admin_only = g.get("admin_only", False)
             
@@ -465,38 +466,25 @@ def make_user_management_keyboard(config):
             next_role = "full" if role == "base" else "base"
             
             keyboard.append([
-                {"text": f"👤 {uname} [{role_title}]", "callback_data": "none"}
+                {"text": f"👤 {uname} (ID: {uid}) [{role_title}]", "callback_data": "none"}
             ])
             keyboard.append([
                 {"text": f"🔄 Сменить доступ на: {'Полный' if role == 'base' else 'Базовый'}", "callback_data": f"set_role:{next_role}:{uid}"},
                 {"text": f"❌ Удалить", "callback_data": f"del_u:{uid}"}
             ])
         else:
-            keyboard.append([{"text": f"👑 Главный Админ: {uname}", "callback_data": "none"}])
+            keyboard.append([{"text": f"👑 Главный Админ: {uname} (ID: {uid})", "callback_data": "none"}])
             
     return {"inline_keyboard": keyboard}
 
 def background_watchdog(config, bot, monitor):
-    print("Фоновый мониторинг запущен...")
+    print("Фоновый тихий мониторинг запущен...")
     interval = config.get("settings", {}).get("check_interval_seconds", 30)
-    hourly_digest = config.get("settings", {}).get("hourly_digest", True)
-    
-    last_hourly_sent = 0
 
     while True:
         try:
             state = load_state()
             groups = monitor.get_groups_info(has_full_access=True)
-            now_ts = time.time()
-
-            if hourly_digest and (now_ts - last_hourly_sent >= 3500):
-                current_min = datetime.now().minute
-                if current_min == 0:
-                    for uid in bot.allowed_chat_ids:
-                        has_full = bot.has_full_access(uid)
-                        report = monitor.format_all_status_report(has_full_access=has_full)
-                        bot.send_message(uid, f"<b>Почасовой отчет VPS</b>\n\n{report}")
-                    last_hourly_sent = now_ts
 
             for gid, info in groups.items():
                 prev_running = state.get(gid, {}).get("is_running", True)
@@ -505,6 +493,7 @@ def background_watchdog(config, bot, monitor):
                 auto_restart = info.get("auto_restart", False)
                 admin_only = info.get("admin_only", False)
                 
+                # Уведомление ТОЛЬКО при реальном сбое
                 if prev_running and not curr_running:
                     alert_msg = (
                         f"<b>Внимание! Сбой в группе {custom_name}!</b>\n\n"
@@ -572,33 +561,31 @@ def main():
                     
                     is_admin_user = bot.is_admin(chat_id)
 
-                    # --- ОБРАБОТКА НОВЫХ ПОЛЬЗОВАТЕЛЕЙ (ОДОБРЕНИЕ АДМИНОМ) ---
+                    # --- ОБРАБОТКА НОВЫХ ПОЛЬЗОВАТЕЛЕЙ (ОДОБРЕНИЕ АДМИНОМ ПО ID) ---
                     if bot.allowed_chat_ids and chat_id not in bot.allowed_chat_ids:
                         uname = f"@{from_user.get('username')}" if from_user.get('username') else from_user.get('first_name', str(chat_id))
                         
-                        # Сообщение неавторизованному пользователю
                         bot.send_message(
                             chat_id,
                             f"👋 Здравствуйте, {uname}!\n\n"
                             f"Ваш запрос на доступ отправлен Администратору.\n"
-                            f"Ваш Telegram Chat ID: <code>{chat_id}</code>\n"
+                            f"Ваш Chat ID: <code>{chat_id}</code>\n"
                             f"Ожидайте подтверждения доступа..."
                         )
 
-                        # Инлайн сообщение Главной Администратору
                         adm_msg = (
-                            f"📥 <b>Запрос на доступ к бота VPS Sentinel!</b>\n\n"
+                            f"📥 <b>Запрос на доступ к боту VPS Sentinel!</b>\n\n"
                             f"Пользователь: <b>{uname}</b>\n"
-                            f"Chat ID: <code>{chat_id}</code>\n\n"
+                            f"Telegram Chat ID: <code>{chat_id}</code>\n\n"
                             f"Выберите уровень доступа:"
                         )
                         approve_kb = {
                             "inline_keyboard": [
                                 [
-                                    {"text": "Одобрить: Базовый (Партнёрка+ЦЖ)", "callback_data": f"app_user:base:{chat_id}"}
+                                    {"text": f"Выдать доступ: Базовый (ID: {chat_id})", "callback_data": f"app_user:base:{chat_id}"}
                                 ],
                                 [
-                                    {"text": "Одобрить: Полный (Все сервисы)", "callback_data": f"app_user:full:{chat_id}"}
+                                    {"text": f"Выдать доступ: Полный (ID: {chat_id})", "callback_data": f"app_user:full:{chat_id}"}
                                 ],
                                 [
                                     {"text": "Отклонить", "callback_data": f"rej_user:{chat_id}"}
@@ -608,7 +595,6 @@ def main():
                         bot.broadcast(adm_msg, reply_markup=approve_kb, admin_only=True)
                         continue
 
-                    # Автоматически обновляем данные пользователя
                     bot.update_user_info(chat_id, from_user)
 
                     if text == "/start":
@@ -618,7 +604,7 @@ def main():
                             f"• Нажмите <b>Инфо о VPS</b> для просмотра ресурсов сервера (ОЗУ/CPU/Диск)"
                         )
                         if is_admin_user:
-                            welcome_text += "\n• Раздел <b>Пользователи бота</b> доступен для управления ролями и доступом."
+                            welcome_text += "\n• Раздел <b>Пользователи бота</b> доступен для управления доступом по Chat ID."
                         bot.send_message(chat_id, welcome_text, reply_markup=make_main_reply_keyboard(is_admin_user))
 
                     elif text == "Инфо о VPS":
@@ -638,9 +624,9 @@ def main():
                         kb = make_user_management_keyboard(config)
                         info_msg = (
                             "<b>Управление доступом пользователей</b>\n\n"
-                            "Для добавления пользователя отправьте Chat ID:\n"
+                            "Для выдачи доступа новому пользователю отправьте его числовой Chat ID:\n"
                             "<code>/add 123456789</code>\n\n"
-                            "Текущие пользователи и их уровни доступа:"
+                            "Список разрешённых пользователей с юзернеймами:"
                         )
                         bot.send_message(chat_id, info_msg, reply_markup=kb)
 
@@ -648,13 +634,13 @@ def main():
                         val = text.split("/add ")[1].strip()
                         if val.isdigit():
                             new_id = int(val)
-                            bot.update_user_info(new_id, {"id": new_id, "username": str(new_id)}, role="base")
+                            bot.update_user_info(new_id, {"id": new_id, "username": f"ID: {new_id}"}, role="base")
                             save_config(config)
                             bot.reload_users(config)
                             monitor.reload_config(config)
-                            bot.send_message(chat_id, f"Пользователь <code>{new_id}</code> успешно добавлен со стандартным доступом (Базовый)!")
+                            bot.send_message(chat_id, f"Пользователю с ID <code>{new_id}</code> успешно выдан Базовый доступ!")
                         else:
-                            bot.send_message(chat_id, "Для точного добавления укажите числовой Chat ID пользователя (например `/add 123456789`). Либо попросите пользователя написать /start боту для одобрения в один клик.")
+                            bot.send_message(chat_id, "Пожалуйста, указывайте числовой Telegram Chat ID для добавления доступа. Пример: <code>/add 123456789</code>")
 
                     elif is_admin_user and text.startswith("/del "):
                         val = text.split("/del ")[1].strip()
@@ -670,7 +656,7 @@ def main():
                                 save_config(config)
                                 bot.reload_users(config)
                                 monitor.reload_config(config)
-                                bot.send_message(chat_id, f"Пользователь удалён!")
+                                bot.send_message(chat_id, f"Пользователь с ID <code>{target_id}</code> удален!")
                             else:
                                 bot.send_message(chat_id, "Пользователь не найден в списке.")
 
@@ -683,7 +669,6 @@ def main():
 
                     is_admin_user = bot.is_admin(chat_id)
 
-                    # --- ОБРАБОТКА ОДОБРЕНИЙ НОВЫХ ПОЛЬЗОВАТЕЛЕЙ АДМИНОМ ---
                     if is_admin_user and data.startswith("app_user:"):
                         parts = data.split(":")
                         role = parts[1]
@@ -695,18 +680,17 @@ def main():
                         monitor.reload_config(config)
 
                         role_title = "Базовый (Партнёрка+ЦЖ)" if role == "base" else "Полный (Все сервисы)"
-                        bot.answer_callback_query(cb_id, f"Пользователю {target_id} выдан доступ: {role_title}")
-                        bot.send_message(chat_id, f"✅ Доступ для ID <code>{target_id}</code> успешно одобрен! Уровень доступа: <b>{role_title}</b>.")
+                        bot.answer_callback_query(cb_id, f"Доступ для ID {target_id} выдан!")
+                        bot.send_message(chat_id, f"✅ Пользователю ID <code>{target_id}</code> выдан доступ: <b>{role_title}</b>.")
                         
-                        # Сообщение самому пользователю
-                        bot.send_message(target_id, f"🎉 <b>Ваш доступ одобрен!</b> Уровень доступа: <b>{role_title}</b>.\nНажмите /start для вызова меню.")
+                        bot.send_message(target_id, f"🎉 <b>Ваш доступ одобрен!</b> Уровень: <b>{role_title}</b>.\nНажмите /start для начала работы.")
                         continue
 
                     elif is_admin_user and data.startswith("rej_user:"):
                         target_id = int(data.split(":")[1])
                         bot.answer_callback_query(cb_id, "Запрос отклонен.")
                         bot.send_message(chat_id, f"🚫 Запрос от ID <code>{target_id}</code> отклонён.")
-                        bot.send_message(target_id, "🚫 К сожалению, ваш запрос на доступ отклонен Администратором.")
+                        bot.send_message(target_id, "🚫 Запрос на доступ отклонен.")
                         continue
 
                     if bot.allowed_chat_ids and chat_id not in bot.allowed_chat_ids:
@@ -737,7 +721,6 @@ def main():
                         ok, rst_msg = monitor.restart_group(gid)
                         bot.send_message(chat_id, f"<b>Результаты проверки группы:</b>\n{rst_msg}")
 
-                    # --- СМЕНА РОЛИ ПОЛЬЗОВАТЕЛЯ АДМИНОМ ---
                     elif is_admin_user and data.startswith("set_role:"):
                         parts = data.split(":")
                         new_role = parts[1]
@@ -752,7 +735,7 @@ def main():
                         monitor.reload_config(config)
 
                         role_title = "Базовый (Партнёрка+ЦЖ)" if new_role == "base" else "Полный (Все сервисы)"
-                        bot.send_message(chat_id, f"Доступ для пользователя изменён на: <b>{role_title}</b>.")
+                        bot.send_message(chat_id, f"Доступ для ID <code>{target_id}</code> изменён на: <b>{role_title}</b>.")
                         kb = make_user_management_keyboard(config)
                         bot.send_message(chat_id, "Обновленный список пользователей:", reply_markup=kb)
 
@@ -768,7 +751,7 @@ def main():
                             save_config(config)
                             bot.reload_users(config)
                             monitor.reload_config(config)
-                            bot.send_message(chat_id, "Пользователь успешно удалён!")
+                            bot.send_message(chat_id, f"Пользователь с ID <code>{del_id}</code> успешно удалён!")
                             kb = make_user_management_keyboard(config)
                             bot.send_message(chat_id, "Обновленный список пользователей:", reply_markup=kb)
 
